@@ -87,14 +87,19 @@ jobs:
             exit 1
           fi
           
+          {
+            echo "Automated mirror of https://github.com/imputnet/helium-linux/releases/tag/${TAG}"
+            echo ""
+            echo "Mirrored assets:"
+            printf -- '- %s\n' "${FILES[@]}"
+          } > release_notes.md
+          
           echo "Creating release $TAG with files: ${FILES[*]}"
           
           gh release create "$TAG" \
             --title "$TAG" \
-            --notes "Automated mirror of https://github.com/imputnet/helium-linux/releases/tag/$TAG
-
-Mirrored assets:
-$(printf -- '- %s\n' "${FILES[@]}")" \
+            --notes-file release_notes.md \
             "${FILES[@]}"
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
