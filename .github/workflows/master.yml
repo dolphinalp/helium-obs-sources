@@ -1,0 +1,100 @@
+name: Mirror Helium Linux releases
+
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get latest Helium Linux release
+        id: latest
+        run: |
+          RELEASE=$(curl -sS https://api.github.com/repos/imputnet/helium-linux/releases/latest)
+          
+          TAG=$(echo "$RELEASE" | jq -r .tag_name)
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          
+          echo "$RELEASE" > release.json
+          
+          echo "Latest version: $TAG"
+
+      - name: Check if release already exists
+        id: check
+        run: |
+          if gh release view "${{ steps.latest.outputs.tag }}" --repo ${{ github.repository }} > /dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Release ${{ steps.latest.outputs.tag }} already exists — skipping"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Need to mirror ${{ steps.latest.outputs.tag }}"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download assets and create release
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          
+          TAG="${{ steps.latest.outputs.tag }}"
+          
+          PATTERNS=(
+            "x86_64_linux.tar.xz"
+            "arm64_linux.tar.xz"
+          )
+          
+          FILES=()
+          
+          for pattern in "${PATTERNS[@]}"; do
+            ASSET_URL=$(jq -r --arg p "$pattern" \
+              '.assets[] | select(.name | test($p + "$")) | .browser_download_url' release.json)
+            ASSET_NAME=$(jq -r --arg p "$pattern" \
+              '.assets[] | select(.name | test($p + "$")) | .name' release.json)
+            
+            if [[ -n "$ASSET_URL" && "$ASSET_URL" != "null" ]]; then
+              echo "Downloading $ASSET_NAME ..."
+              curl -L --retry 5 --retry-delay 10 --retry-all-errors \
+                   -o "$ASSET_NAME" "$ASSET_URL"
+              FILES+=("$ASSET_NAME")
+              
+              ASC_URL=$(jq -r --arg n "${ASSET_NAME}.asc" \
+                '.assets[] | select(.name == $n) | .browser_download_url' release.json)
+              
+              if [[ -n "$ASC_URL" && "$ASC_URL" != "null" ]]; then
+                echo "Downloading ${ASSET_NAME}.asc ..."
+                curl -L --retry 5 --retry-delay 5 \
+                     -o "${ASSET_NAME}.asc" "$ASC_URL"
+                FILES+=("${ASSET_NAME}.asc")
+              else
+                echo "No .asc found for $ASSET_NAME — skipping signature"
+              fi
+            else
+              echo "Asset matching *$pattern not found — skipping"
+            fi
+          done
+          
+          if [[ ${#FILES[@]} -eq 0 ]]; then
+            echo "No assets downloaded. Exiting."
+            exit 1
+          fi
+          
+          echo "Creating release $TAG with files: ${FILES[*]}"
+          
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes "Automated mirror of https://github.com/imputnet/helium-linux/releases/tag/$TAG
+
+Mirrored assets:
+$(printf -- '- %s\n' "${FILES[@]}")" \
+            "${FILES[@]}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
